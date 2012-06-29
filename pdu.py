@@ -24,6 +24,10 @@ The user enters the destination number, the message, the class, and the SMSC.
 The program generates the commands needed to instruct a modem to deliver the SMS.
 """
 
+# This is pyserial which is needed to communicate with the 3G USB Dongle http://pyserial.sourceforge.net/
+import serial
+
+
 # Array with the default 7 bit alphabet
 # @ = 0 = 0b00000000, a = 97 = 0b1100001, etc
 # Alignment is purely an attempt at readability
@@ -34,9 +38,11 @@ SEVEN_BIT_ALPHABET_ARRAY = (
     '0', '1', '2', '3', '4', '5', '6', '7','8', '9', 
     ':', ';', '<', '=', '>', '?', '¡', 
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-    'Ä',                                                                  'Ö', 'Ñ',                     'Ü', '§', '¿', 
+    'Ä',                                                                  'Ö', 
+                                                                     'Ñ',                               'Ü', '§', '¿', 
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 
-    'ä',                                                                  'ö', 'ñ',                     'ü', 
+    'ä',                                                                  'ö', 
+                                                                     'ñ',                               'ü', 
     'à')
 
 
@@ -60,6 +66,41 @@ def convert_character_to_seven_bit(character) :
             return i
     return 36 # If the character cannot be found, return a ¤ to indicate the missing character
 
+
+def send_AT_command(cmd) :
+    """ Send a command to the dongle
+    """
+    dongle.write(AT_COMMAND+cmd+'\r')
+    
+    
+def get_SMSC_from_dongle() :
+    """ Interogate the dongle and get the SMSC number
+    """
+    
+    print "Asking the SIM for the SMSC"
+    # find the SMSC
+    send_AT_command('+CSCA?')
+
+    # read the output, print it to screen. Stop when "OK" is seen
+    while True:
+        output = dongle.readline()
+        print output
+    
+        # find the response about the SMSC
+        if output.startswith("+CSCA:") :
+            first_quote = output.find('"') + 1 # zero based index, first quote
+            last_quote = output.rfind('"') # last quote
+            SMSC_number = output[first_quote:last_quote] # Extract the string between the "
+            print "The SMSC number is " + SMSC_number
+            return SMSC_number
+
+        if output.startswith("OK"):
+            break
+        if output.startswith("ERROR"):
+            break
+
+
+
 # Set the initial variables
 FIRST_OCTET = "0100" # MAGIC
 PROTO_ID = "00" # MORE MAGIC
@@ -75,18 +116,23 @@ destination_phone_number_format = "81" # by default, assume that it's in nationa
 message_text = "" # The message to be sent
 encoded_message_binary_string = "" # The message, as encoded into binary
 encoded_message_octet = "" # individual octets of the message
+AT_COMMAND = "AT" # Commands sent to dongle should start with this
+AT_SET_PDU = "+CMGF=0" # Command to set the dongle into PDU mode
+SEND_CHARACTER = chr(26)
+
+# Set up the connection to the dongle
+dongle = serial.Serial(port="/dev/ttyUSB0",baudrate=115200,timeout=0,rtscts=0,xonxoff=0)
 
 # Get the user inputs. No error checking in this version :-)
 get_destination_phone_number = raw_input("Which phone number do you want to send an SMS to? (e.g. +447700900123) : ")
 get_message_text = raw_input("What message do you want to send? : ")
 get_message_class = raw_input("For FLASH SMS, type 0. For regular SMS, type 1 : ")
-get_SMSC_number = raw_input("Which SMSC will you use? (e.g. +447802002606) : ")
 
 # TODO Error check & sanitize input
 destination_phone_number = get_destination_phone_number
 message_text = get_message_text
 message_class = int(get_message_class)
-SMSC_number = get_SMSC_number
+SMSC_number = get_SMSC_from_dongle() #get_SMSC_number
 
 # Set data encoding
 data_encoding = data_encoding + str(message_class)
@@ -164,9 +210,17 @@ PDU = str(SMSC_info_length).zfill(2) \
         + encoded_message_octet
 
 # Generate the AT Commands
-AT_CMGS = (len(PDU)/2) - SMSC_length - 1
-AT_COMMAND = "AT+CMGS=" + str(AT_CMGS)
+AT_CMGS = "+CMGS=" + str((len(PDU)/2) - SMSC_length - 1)
 
 # Show the commands
-print AT_COMMAND
+print AT_COMMAND + AT_SET_PDU
+print AT_COMMAND + AT_CMGS
 print PDU
+
+# Send the commands to the dongle
+send_AT_command("") # Send an initial AT
+send_AT_command(AT_SET_PDU) # Send the command to place the dongle in PDU mode
+send_AT_command(AT_CMGS) # Send the command showing the length of the upcoming PDU, should prompt for input ">"
+dongle.write(PDU) # Send the PDU
+dongle.write(SEND_CHARACTER) # Submit the PDU
+dongle.close() # Close the connection
